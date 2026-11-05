@@ -440,8 +440,9 @@
 +sweet_rpmh_vreg_enable(const char *res, unsigned mv)
 +{
 +	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
-+	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
-+		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	if (!res || (strcmp(res, "ldoc11") && strcmp(res, "ldoa13")) ||
++	    mv < 1600 || mv > 3400) {
++		printf("SWEET RPMH: expected ldoc11 or ldoa13 and 1600..3400 mV\n");
 +		return EINVAL;
 +	}
 +	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {

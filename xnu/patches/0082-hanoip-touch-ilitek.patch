@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,425 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -415,6 +415,12 @@ new file mode 100644
 +	uint32_t base = HPT_TLMM_PA;
 +	(void)PE_parse_boot_argn("hptbase", &base, sizeof(base));
 +	hpt.gpio = ml_io_map(base, HPT_TLMM_SIZE);
++	/* Power the ILITEK TDDI: its I/O rail is the panel's VDDI, pm6150_l13. */
++	{
++		extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++		int pe = sweet_rpmh_vreg_enable("ldoa13", 1696);
++		printf("HANOIP TOUCH: ldoa13 (VDDI) vote -> %d\n", pe);
++	}
 +	kern_return_t kr = kernel_thread_start(hpt_thread, NULL, &thread);
 +	if (kr == KERN_SUCCESS) {
 +		thread_deallocate(thread);
