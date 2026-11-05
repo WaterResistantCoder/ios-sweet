@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,367 @@
+@@ -0,0 +1,373 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -232,18 +232,20 @@ new file mode 100644
 +	hpt_set(hpt.cs, 1);
 +}
 +
-+/* Try every assignment of {clk,mosi,miso,cs} to the four pins, once. */
++/* Try every assignment of {clk,mosi,miso,cs} to the candidate pins, once. */
 +static void
 +hpt_sweep(void)
 +{
-+	static const unsigned pins[4] = { 59, 60, 61, 62 };
++	static const unsigned pins[] = { 59, 60, 61, 62, 63, 64, 65 };
++	const int np = (int)(sizeof(pins) / sizeof(pins[0]));
 +	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
 +
++	(void)id;
 +	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
-+	for (int a = 0; a < 4; ++a) {
-+		for (int b = 0; b < 4; ++b) {
-+			for (int c = 0; c < 4; ++c) {
-+				for (int d = 0; d < 4; ++d) {
++	for (int a = 0; a < np; ++a) {
++		for (int b = 0; b < np; ++b) {
++			for (int c = 0; c < np; ++c) {
++				for (int d = 0; d < np; ++d) {
 +					if (a == b || a == c || a == d || b == c || b == d || c == d) {
 +						continue;
 +					}
@@ -256,13 +258,17 @@ new file mode 100644
 +					hpt_ice_enter();
 +					uint8_t rep[8] = { 0 };
 +					hpt_ice_read(0x000000, rep, sizeof(rep));
-+					printf("HANOIP SWEEP: clk=%u mosi=%u miso=%u cs=%u -> %02x %02x %02x %02x %02x\n",
-+					    hpt.clk, hpt.mosi, hpt.miso, hpt.cs,
-+					    rep[0], rep[1], rep[2], rep[3], rep[4]);
++					/* Only report results that are neither idle-low nor pull-up. */
++					if (rep[0] != 0x00 && rep[0] != 0xFF) {
++						printf("HANOIP SWEEP: clk=%u mosi=%u miso=%u cs=%u -> %02x %02x %02x %02x %02x\n",
++						    hpt.clk, hpt.mosi, hpt.miso, hpt.cs,
++						    rep[0], rep[1], rep[2], rep[3], rep[4]);
++					}
 +				}
 +			}
 +		}
 +	}
++	printf("HANOIP TOUCH: sweep over %d pins done\n", np);
 +}
 +
 +static void
