@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,301 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -215,6 +215,19 @@ new file mode 100644
 +	    hpt.clk, hpt.mosi, hpt.miso, hpt.cs);
 +
 +	/* Bus + control lines. */
++	printf("HANOIP TOUCH: probing TLMM bases (cfg/io per pin)\n");
++	{
++		static const unsigned probe[] = { 8, 9, 59, 60, 61, 62 };
++		vm_offset_t a = ml_io_map(0x03400000u, 0x100000u);
++		vm_offset_t b = ml_io_map(0x03900000u, 0x100000u);
++		for (unsigned i = 0; i < sizeof(probe) / sizeof(probe[0]); ++i) {
++			unsigned p = probe[i];
++			printf("HANOIP TOUCH: pin %u A cfg=%08x io=%08x | B cfg=%08x io=%08x\n",
++			    p, hpt_rd(a, HPT_GPIO_CFG(p)), hpt_rd(a, HPT_GPIO_IO(p)),
++			    hpt_rd(b, HPT_GPIO_CFG(p)), hpt_rd(b, HPT_GPIO_IO(p)));
++		}
++	}
++
 +	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
 +	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
 +	hpt_gpio(hpt.miso, 0, 0x2000, 0x8, false);	/* pull-up, input */
@@ -281,11 +294,9 @@ new file mode 100644
 +	(void)PE_parse_boot_argn("hptsmiso", &hpt.miso, sizeof(hpt.miso));
 +	(void)PE_parse_boot_argn("hptscs", &hpt.cs, sizeof(hpt.cs));
 +
-+	hpt.gpio = ml_io_map(HPT_TLMM_PA, HPT_TLMM_SIZE);
-+	if (hpt.gpio == 0) {
-+		printf("HANOIP TOUCH: no TLMM mapping\n");
-+		return;
-+	}
++	uint32_t base = HPT_TLMM_PA;
++	(void)PE_parse_boot_argn("hptbase", &base, sizeof(base));
++	hpt.gpio = ml_io_map(base, HPT_TLMM_SIZE);
 +	kern_return_t kr = kernel_thread_start(hpt_thread, NULL, &thread);
 +	if (kr == KERN_SUCCESS) {
 +		thread_deallocate(thread);
