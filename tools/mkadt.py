@@ -9,9 +9,12 @@ import hashlib, os, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
 
-# Kernel-managed RAM: above every Qualcomm XPU carve-out (see NOTES.md)
+# Kernel-managed RAM: above every Qualcomm XPU carve-out (see NOTES.md).
+# hanoip's carve-outs all end below 0xaf0c0000 and the FDT has one DRAM bank
+# [0x80000000, 0x17dd00000), so this whole span is free (~3.22 GiB) — much more
+# than the upper bank alone (0x7dd00000).
 PHYS_BASE = 0xb0000000
-MEM_SIZE = 0x4d000000
+MEM_SIZE = 0xcdd00000
 # Panic log buffer, carved from the TOP of the dram range and exposed to XNU as
 # /pram + /chosen/embedded-panic-log-size. Without it, pe_init.c's
 # check_for_panic_log() leaves gPanicBase == 0, debug_log_init() bails out twice

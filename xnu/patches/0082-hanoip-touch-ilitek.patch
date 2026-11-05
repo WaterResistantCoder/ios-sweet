@@ -1,0 +1,326 @@
+diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
+new file mode 100644
+--- /dev/null
++++ b/bsd/dev/hanoip_touch.c
+@@ -0,0 +1,290 @@
++/*
++ * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
++ *
++ * The ILITEK chip hangs off GENI SE6 (wrapper1 SE0) on SPI pins 59-62, with
++ * reset on TLMM gpio8 and IRQ on TLMM gpio9.  Rather than bring up the GENI
++ * serial engine (whose clock/RCG and pin roles differ from sweet's SE7), this
++ * drives the four SPI lines as plain GPIO.  The bit rate is low but a 43-byte
++ * report takes well under a millisecond.
++ *
++ * Protocol (from motorola ilitek_v3_mmi):
++ *   write: 0x82 len_hi len_lo <data...>
++ *   read : 0x83 , then read N bytes
++ *   AP-mode report is 43 bytes: 10 fingers, 4 bytes each at buf[4*i+1..4],
++ *   x = ((buf[4i+1] & 0xF0) << 4) | buf[4i+2]
++ *   y = ((buf[4i+1] & 0x0F) << 8) | buf[4i+3]
++ *
++ * Pin roles are boot-args so we can probe without a rebuild:
++ *   hptsclk hptsmosi hptsmiso hptscs  (default 59 60 61 62)
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <libkern/libkern.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern void sweet_hid_touch(int finger, int down, int x, int y);
++
++#define HPT_TLMM_PA     0x03900000u	/* DT TLMM (0x3400000) + NORTH 0x500000 */
++#define HPT_TLMM_SIZE   0x00200000u
++#define HPT_GPIO_CFG(n) ((uint32_t)(n) * 0x1000u)
++#define HPT_GPIO_IO(n)  (HPT_GPIO_CFG(n) + 4u)
++#define HPT_RESET_PIN   8
++#define HPT_IRQ_PIN     9
++#define HPT_MAX         10
++#define HPT_REPORT_LEN  43
++#define HPT_SPI_WRITE   0x82
++#define HPT_SPI_READ    0x83
++#define HPT_MODE_CTRL   0xF0
++#define HPT_FW_AP_MODE  0x00
++#define HPT_READ_DATA   0xF6
++
++static struct {
++	vm_offset_t gpio;
++	bool started;
++	unsigned clk, mosi, miso, cs;
++} hpt;
++
++static uint32_t
++hpt_rd(vm_offset_t base, uint32_t off)
++{
++	uint32_t v = *(volatile uint32_t *)(base + off);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return v;
++}
++
++static void
++hpt_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++hpt_delay(void)
++{
++	/* ~1 us busy wait: slow SPI, but the ILITEK tolerates a wide clock range. */
++	for (volatile int i = 0; i < 200; ++i) {
++		__asm__ volatile("nop");
++	}
++}
++
++static void
++hpt_gpio(unsigned pin, unsigned mux, unsigned pull, unsigned drive, bool out)
++{
++	uint32_t off = HPT_GPIO_CFG(pin);
++	uint32_t cfg = hpt_rd(hpt.gpio, off);
++	if (out) {
++		hpt_wr(hpt.gpio, HPT_GPIO_IO(pin), hpt_rd(hpt.gpio, HPT_GPIO_IO(pin)) | 2u);
++	}
++	cfg &= ~0x3ffu;
++	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	hpt_wr(hpt.gpio, off, cfg);
++}
++
++static void
++hpt_set(unsigned pin, int val)
++{
++	uint32_t v = hpt_rd(hpt.gpio, HPT_GPIO_IO(pin));
++	v = val ? (v | 2u) : (v & ~2u);
++	hpt_wr(hpt.gpio, HPT_GPIO_IO(pin), v);
++}
++
++static int
++hpt_get(unsigned pin)
++{
++	return !!(hpt_rd(hpt.gpio, HPT_GPIO_IO(pin)) & 2u);
++}
++
++/* SPI mode 0: CPOL=0, CPHA=0.  MSB first. */
++static void
++hpt_spi_xfer(const uint8_t *tx, size_t ntx, uint8_t *rx, size_t nrx)
++{
++	hpt_set(hpt.cs, 0);
++	hpt_delay();
++	for (size_t i = 0; i < ntx; ++i) {
++		uint8_t b = tx[i];
++		for (int bit = 7; bit >= 0; --bit) {
++			hpt_set(hpt.mosi, (b >> bit) & 1);
++			hpt_delay();
++			hpt_set(hpt.clk, 1);
++			hpt_delay();
++			hpt_set(hpt.clk, 0);
++			hpt_delay();
++		}
++	}
++	for (size_t i = 0; i < nrx; ++i) {
++		uint8_t b = 0;
++		for (int bit = 7; bit >= 0; --bit) {
++			hpt_delay();
++			hpt_set(hpt.clk, 1);
++			hpt_delay();
++			b = (uint8_t)((b << 1) | hpt_get(hpt.miso));
++			hpt_set(hpt.clk, 0);
++		}
++		rx[i] = b;
++	}
++	hpt_delay();
++	hpt_set(hpt.cs, 1);
++}
++
++static void
++hpt_write(const uint8_t *data, size_t len)
++{
++	uint8_t buf[8];
++	buf[0] = HPT_SPI_WRITE;
++	buf[1] = (uint8_t)(len >> 8);
++	buf[2] = (uint8_t)(len & 0xff);
++	for (size_t i = 0; i < len && i < sizeof(buf) - 3; ++i) {
++		buf[3 + i] = data[i];
++	}
++	hpt_spi_xfer(buf, 3 + len, NULL, 0);
++}
++
++static void
++hpt_read(uint8_t *out, size_t len)
++{
++	uint8_t cmd = HPT_SPI_READ;
++	hpt_spi_xfer(&cmd, 1, out, len);
++}
++
++static void
++hpt_reset(void)
++{
++	hpt_gpio(HPT_RESET_PIN, 0, 0, 0x8, true);
++	hpt_set(HPT_RESET_PIN, 0);
++	for (volatile int i = 0; i < 200000; ++i) {
++		__asm__ volatile("nop");
++	}
++	hpt_set(HPT_RESET_PIN, 1);
++	for (volatile int i = 0; i < 400000; ++i) {
++		__asm__ volatile("nop");
++	}
++}
++
++static void
++hpt_report(void)
++{
++	uint8_t rep[HPT_REPORT_LEN];
++	hpt_read(rep, sizeof(rep));
++
++	/* Header sanity: the AP-mode report starts with 0xB7. */
++	if (rep[0] != 0xB7) {
++		return;
++	}
++
++	bool down[HPT_MAX] = { false };
++	for (int i = 0; i < HPT_MAX; ++i) {
++		const uint8_t *p = &rep[4 * i + 1];
++		if (p[0] == 0xFF && p[1] == 0xFF && p[2] == 0xFF) {
++			continue;
++		}
++		uint32_t x = ((uint32_t)(p[0] & 0xF0) << 4) | p[1];
++		uint32_t y = ((uint32_t)(p[0] & 0x0F) << 8) | p[2];
++		/* The IC reports in its own resolution; scale to the 1080x2460 panel. */
++		uint32_t px = x * 1080u / 2048u;
++		uint32_t py = y * 2460u / 2048u;
++		down[i] = true;
++		sweet_hid_touch(i, 1, (int)px, (int)py);
++	}
++	for (int i = 0; i < HPT_MAX; ++i) {
++		if (!down[i]) {
++			sweet_hid_touch(i, 0, 0, 0);
++		}
++	}
++}
++
++static void
++hpt_thread(void *arg, wait_result_t result)
++{
++	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
++	uint8_t ver[4] = { 0 };
++
++	printf("HANOIP TOUCH: clk=%u mosi=%u miso=%u cs=%u\n",
++	    hpt.clk, hpt.mosi, hpt.miso, hpt.cs);
++
++	/* Bus + control lines. */
++	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
++	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
++	hpt_gpio(hpt.miso, 0, 0x2000, 0x8, false);	/* pull-up, input */
++	hpt_gpio(hpt.cs, 0, 0x2000, 0x8, true);
++	hpt_set(hpt.cs, 1);
++	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
++
++	/* Probe: idle levels of the four lines before any reset. */
++	printf("HANOIP TOUCH: idle clk=%d mosi=%d miso=%d cs=%d irq=%d\n",
++	    hpt_get(hpt.clk), hpt_get(hpt.mosi), hpt_get(hpt.miso),
++	    hpt_get(hpt.cs), hpt_get(HPT_IRQ_PIN));
++
++	hpt_reset();
++	printf("HANOIP TOUCH: after reset irq=%d miso=%d\n",
++	    hpt_get(HPT_IRQ_PIN), hpt_get(hpt.miso));
++
++	/* Switch to AP mode and try to read a report. */
++	hpt_write(id, sizeof(id));
++
++	for (int i = 0; i < 4; ++i) {
++		uint8_t rep[HPT_REPORT_LEN];
++		memset(rep, 0, sizeof(rep));
++		hpt_read(rep, sizeof(rep));
++		printf("HANOIP TOUCH: read%d %02x %02x %02x %02x %02x %02x %02x %02x\n",
++		    i, rep[0], rep[1], rep[2], rep[3], rep[4], rep[5], rep[6], rep[7]);
++		for (volatile int k = 0; k < 2000000; ++k) {
++			__asm__ volatile("nop");
++		}
++	}
++
++	(void)ver;
++	/* Steady state: poll the IRQ and read reports. */
++	for (;;) {
++		if (!hpt_get(HPT_IRQ_PIN)) {
++			hpt_report();
++		}
++		for (volatile int k = 0; k < 200000; ++k) {
++			__asm__ volatile("nop");
++		}
++	}
++}
++
++void
++hanoip_touch_init(void)
++{
++	int enabled = 1;
++	thread_t thread;
++
++	if (hpt.started) {
++		return;
++	}
++	hpt.started = true;
++	(void)PE_parse_boot_argn("hanoipts", &enabled, sizeof(enabled));
++	if (!enabled) {
++		printf("HANOIP TOUCH: disabled (hanoipts=0)\n");
++		return;
++	}
++	hpt.clk = 59;
++	hpt.mosi = 60;
++	hpt.miso = 61;
++	hpt.cs = 62;
++	(void)PE_parse_boot_argn("hptsclk", &hpt.clk, sizeof(hpt.clk));
++	(void)PE_parse_boot_argn("hptsmosi", &hpt.mosi, sizeof(hpt.mosi));
++	(void)PE_parse_boot_argn("hptsmiso", &hpt.miso, sizeof(hpt.miso));
++	(void)PE_parse_boot_argn("hptscs", &hpt.cs, sizeof(hpt.cs));
++
++	hpt.gpio = ml_io_map(HPT_TLMM_PA, HPT_TLMM_SIZE);
++	if (hpt.gpio == 0) {
++		printf("HANOIP TOUCH: no TLMM mapping\n");
++		return;
++	}
++	kern_return_t kr = kernel_thread_start(hpt_thread, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("HANOIP TOUCH: kernel_thread_start failed %d\n", kr);
++	}
++}
+diff --git a/bsd/conf/files b/bsd/conf/files
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,4 +108,5 @@
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
++bsd/dev/hanoip_touch.c			standard
+ bsd/dev/mem.c				standard
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++extern void hanoip_touch_init(void);
+ 
+ #define REG_CAP         0x00
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -659,6 +659,7 @@
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	hanoip_touch_init();
+ 	return 0;
+ }
