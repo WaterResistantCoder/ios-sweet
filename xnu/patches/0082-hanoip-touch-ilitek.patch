@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,350 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -206,6 +206,49 @@ new file mode 100644
 +}
 +
 +static void
++hpt_setup_pins(void)
++{
++	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
++	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
++	hpt_gpio(hpt.miso, 0, 0x2000, 0x8, false);	/* pull-up, input */
++	hpt_gpio(hpt.cs, 0, 0x2000, 0x8, true);
++	hpt_set(hpt.cs, 1);
++}
++
++/* Try every assignment of {clk,mosi,miso,cs} to the four pins, once. */
++static void
++hpt_sweep(void)
++{
++	static const unsigned pins[4] = { 59, 60, 61, 62 };
++	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
++
++	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
++	for (int a = 0; a < 4; ++a) {
++		for (int b = 0; b < 4; ++b) {
++			for (int c = 0; c < 4; ++c) {
++				for (int d = 0; d < 4; ++d) {
++					if (a == b || a == c || a == d || b == c || b == d || c == d) {
++						continue;
++					}
++					hpt.clk = pins[a];
++					hpt.mosi = pins[b];
++					hpt.miso = pins[c];
++					hpt.cs = pins[d];
++					hpt_setup_pins();
++					hpt_reset();
++					hpt_write(id, sizeof(id));
++					uint8_t rep[8] = { 0 };
++					hpt_read(rep, sizeof(rep));
++					printf("HANOIP SWEEP: clk=%u mosi=%u miso=%u cs=%u -> %02x %02x %02x %02x %02x\n",
++					    hpt.clk, hpt.mosi, hpt.miso, hpt.cs,
++					    rep[0], rep[1], rep[2], rep[3], rep[4]);
++				}
++			}
++		}
++	}
++}
++
++static void
 +hpt_thread(void *arg, wait_result_t result)
 +{
 +	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
@@ -228,12 +271,18 @@ new file mode 100644
 +		}
 +	}
 +
-+	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
-+	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
-+	hpt_gpio(hpt.miso, 0, 0x2000, 0x8, false);	/* pull-up, input */
-+	hpt_gpio(hpt.cs, 0, 0x2000, 0x8, true);
-+	hpt_set(hpt.cs, 1);
++	hpt_setup_pins();
 +	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
++	{
++		int sweep = 0;
++		(void)PE_parse_boot_argn("hptsweep", &sweep, sizeof(sweep));
++		if (sweep) {
++			hpt_sweep();
++			printf("HANOIP TOUCH: sweep done\n");
++			(void)thread_terminate(current_thread());
++			thread_block(THREAD_CONTINUE_NULL);
++		}
++	}
 +
 +	/* Probe: idle levels of the four lines before any reset. */
 +	printf("HANOIP TOUCH: idle clk=%d mosi=%d miso=%d cs=%d irq=%d\n",
