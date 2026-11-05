@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,350 @@
+@@ -0,0 +1,351 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -33,6 +33,7 @@ new file mode 100644
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
++extern kern_return_t thread_terminate(thread_t);
 +extern void sweet_hid_touch(int finger, int down, int x, int y);
 +
 +#define HPT_TLMM_PA     0x03900000u	/* DT TLMM (0x3400000) + NORTH 0x500000 */
