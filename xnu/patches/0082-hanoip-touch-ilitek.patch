@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,419 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -161,34 +161,62 @@ new file mode 100644
 +	hpt_spi_xfer(&cmd, 1, out, len);
 +}
 +
-+/* ILITEK ICE-mode: a 4-byte entry, then register access via 0x25 <addr...>. */
++/* ILITEK ICE-mode: on the wire, writes are `82 <data...>` with NO length bytes
++ * (the wrapper uses the short form while ICE is enabled). */
++static void
++hpt_ice_write_raw(const uint8_t *data, size_t len)
++{
++	uint8_t buf[8];
++	buf[0] = HPT_SPI_WRITE;
++	for (size_t i = 0; i < len && i < sizeof(buf) - 1; ++i) {
++		buf[1 + i] = data[i];
++	}
++	hpt_spi_xfer(buf, 1 + len, NULL, 0);
++}
++
 +static void
 +hpt_ice_enter(void)
 +{
 +	static const uint8_t open[4] = { 0x25, 0x62, 0x10, 0x18 };
-+	hpt_write(open, sizeof(open));
++	hpt_ice_write_raw(open, sizeof(open));
 +}
 +
 +static void
 +hpt_ice_read(uint32_t addr, uint8_t *out, size_t len)
 +{
 +	uint8_t cmd[4] = { 0x25, (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16) };
-+	hpt_write(cmd, sizeof(cmd));
-+	hpt_read(out, len);
++	uint8_t rx[8];
++	hpt_ice_write_raw(cmd, sizeof(cmd));
++	hpt_read(rx, len + 1);		/* the first byte after 0x83 is discarded */
++	for (size_t i = 0; i < len; ++i) {
++		out[i] = rx[1 + i];
++	}
 +}
 +
 +static void
 +hpt_reset(void)
 +{
++	/* Vendor ili_tp_reset(): high 1ms, low 5ms (assert, active-low), high 10ms. */
 +	hpt_gpio(HPT_RESET_PIN, 0, 0, 0x8, true);
-+	hpt_set(HPT_RESET_PIN, 0);
-+	for (volatile int i = 0; i < 200000; ++i) {
-+		__asm__ volatile("nop");
-+	}
 +	hpt_set(HPT_RESET_PIN, 1);
-+	for (volatile int i = 0; i < 400000; ++i) {
-+		__asm__ volatile("nop");
-+	}
++	delay(1000);
++	hpt_set(HPT_RESET_PIN, 0);
++	delay(5000);
++	hpt_set(HPT_RESET_PIN, 1);
++	delay(10000);
++}
++
++/* Presence test: write 0xA55A5AA5 to WDT9_DUMMY2 (0x51024) and read it back. */
++static bool
++hpt_dummy_check(void)
++{
++	static const uint8_t w[4] = { 0xA5, 0x5A, 0x5A, 0xA5 };
++	uint8_t cmd[8] = { 0x25, 0x24, 0x10, 0x05, 0xA5, 0x5A, 0x5A, 0xA5 };
++	uint8_t rx[8] = { 0 };
++
++	hpt_ice_write_raw(cmd, sizeof(cmd));		/* 25 addr(LE) data(LE) */
++	hpt_ice_read(0x051024, rx, 4);
++	return rx[0] == w[0] && rx[1] == w[1] && rx[2] == w[2] && rx[3] == w[3];
 +}
 +
 +static void
@@ -262,9 +290,14 @@ new file mode 100644
 +					hpt_setup_pins();
 +					hpt_reset();
 +					hpt_ice_enter();
++					bool ok = hpt_dummy_check();
 +					uint8_t rep[8] = { 0 };
-+					hpt_ice_read(0x000000, rep, sizeof(rep));
-+					/* Only report results that are neither idle-low nor pull-up. */
++					hpt_ice_read(0x051024, rep, sizeof(rep));
++					if (ok) {
++						printf("HANOIP SWEEP: clk=%u mosi=%u miso=%u cs=%u -> DUMMY OK (%02x %02x %02x %02x)\n",
++						    hpt.clk, hpt.mosi, hpt.miso, hpt.cs,
++						    rep[0], rep[1], rep[2], rep[3]);
++					}
 +					if (rep[0] == 0x00) {
 +						hist0++;
 +					} else if (rep[0] == 0xFF) {
