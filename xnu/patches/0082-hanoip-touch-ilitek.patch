@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,373 @@
+@@ -0,0 +1,374 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -105,7 +105,8 @@ new file mode 100644
 +static int
 +hpt_get(unsigned pin)
 +{
-+	return !!(hpt_rd(hpt.gpio, HPT_GPIO_IO(pin)) & 2u);
++	/* GPIO_IN_OUT bit 0 is the pin's input level (bit 1 is the output latch). */
++	return !!(hpt_rd(hpt.gpio, HPT_GPIO_IO(pin)) & 1u);
 +}
 +
 +/* SPI mode 0: CPOL=0, CPHA=0.  MSB first. */
