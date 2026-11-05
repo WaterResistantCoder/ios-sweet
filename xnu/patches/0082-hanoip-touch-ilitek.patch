@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,367 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -160,6 +160,22 @@ new file mode 100644
 +	hpt_spi_xfer(&cmd, 1, out, len);
 +}
 +
++/* ILITEK ICE-mode: a 4-byte entry, then register access via 0x25 <addr...>. */
++static void
++hpt_ice_enter(void)
++{
++	static const uint8_t open[4] = { 0x25, 0x62, 0x10, 0x18 };
++	hpt_write(open, sizeof(open));
++}
++
++static void
++hpt_ice_read(uint32_t addr, uint8_t *out, size_t len)
++{
++	uint8_t cmd[4] = { 0x25, (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16) };
++	hpt_write(cmd, sizeof(cmd));
++	hpt_read(out, len);
++}
++
 +static void
 +hpt_reset(void)
 +{
@@ -237,9 +253,9 @@ new file mode 100644
 +					hpt.cs = pins[d];
 +					hpt_setup_pins();
 +					hpt_reset();
-+					hpt_write(id, sizeof(id));
++					hpt_ice_enter();
 +					uint8_t rep[8] = { 0 };
-+					hpt_read(rep, sizeof(rep));
++					hpt_ice_read(0x000000, rep, sizeof(rep));
 +					printf("HANOIP SWEEP: clk=%u mosi=%u miso=%u cs=%u -> %02x %02x %02x %02x %02x\n",
 +					    hpt.clk, hpt.mosi, hpt.miso, hpt.cs,
 +					    rep[0], rep[1], rep[2], rep[3], rep[4]);
