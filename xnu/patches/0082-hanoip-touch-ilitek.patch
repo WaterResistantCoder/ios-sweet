@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,425 @@
+@@ -0,0 +1,440 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -256,8 +256,13 @@ new file mode 100644
 +{
 +	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
 +	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
-+	hpt_gpio(hpt.miso, 0, 0x2000, 0x8, false);	/* pull-up, input */
-+	hpt_gpio(hpt.cs, 0, 0x2000, 0x8, true);
++	hpt_gpio(hpt.miso, 0, 0, 0x8, false);	/* bias-disable, input */
++	hpt_gpio(hpt.cs, 0, 0, 0x8, true);
++	/* SPI mode 0: CLK must idle LOW.  hpt_gpio() leaves the output latch
++	 * high, so without this the first bit of every byte gets no rising edge
++	 * and the IC sees a bit-shifted stream (0x82 arrives as 0x02). */
++	hpt_set(hpt.clk, 0);
++	hpt_set(hpt.mosi, 0);
 +	hpt_set(hpt.cs, 1);
 +}
 +
@@ -357,6 +362,16 @@ new file mode 100644
 +	printf("HANOIP TOUCH: idle clk=%d mosi=%d miso=%d cs=%d irq=%d\n",
 +	    hpt_get(hpt.clk), hpt_get(hpt.mosi), hpt_get(hpt.miso),
 +	    hpt_get(hpt.cs), hpt_get(HPT_IRQ_PIN));
++
++	/* Raw read before reset/ICE: is the chip talking at all, independent of
++	 * ICE/AP state?  A live IC drives MISO; a dead one leaves it at the bias. */
++	{
++		uint8_t raw[8];
++		memset(raw, 0, sizeof(raw));
++		hpt_read(raw, sizeof(raw));
++		printf("HANOIP TOUCH: pre-reset raw %02x %02x %02x %02x %02x %02x %02x %02x\n",
++		    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7]);
++	}
 +
 +	hpt_reset();
 +	printf("HANOIP TOUCH: after reset irq=%d miso=%d\n",
