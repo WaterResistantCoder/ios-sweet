@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,467 @@
+@@ -0,0 +1,498 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -168,11 +168,13 @@ new file mode 100644
 +static void
 +hpt_ice_write_raw(const uint8_t *data, size_t len)
 +{
-+	uint8_t buf[8];
-+	buf[0] = HPT_SPI_WRITE;
-+	for (size_t i = 0; i < len && i < sizeof(buf) - 1; ++i) {
-+		buf[1 + i] = data[i];
++	uint8_t buf[32];
++
++	if (len > sizeof(buf) - 1) {
++		len = sizeof(buf) - 1;
 +	}
++	buf[0] = HPT_SPI_WRITE;
++	memcpy(&buf[1], data, len);
 +	hpt_spi_xfer(buf, 1 + len, NULL, 0);
 +}
 +
@@ -187,15 +189,15 @@ new file mode 100644
 +hpt_ice_read(uint32_t addr, uint8_t *out, size_t len)
 +{
 +	uint8_t cmd[4] = { 0x25, (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16) };
-+	uint8_t rx[16];
-+	if (len + 1 > sizeof(rx)) {
-+		len = sizeof(rx) - 1;
++
++	if (len > 16) {
++		len = 16;
 +	}
 +	hpt_ice_write_raw(cmd, sizeof(cmd));
-+	hpt_read(rx, len + 1);		/* the first byte after 0x83 is discarded */
-+	for (size_t i = 0; i < len; ++i) {
-+		out[i] = rx[1 + i];
-+	}
++	/* The register data starts at the FIRST byte after 0x83: the PID at
++	 * 0x4009C reads 03 1c 07 78 -> 0x78071c03, whose >>8 is the stock
++	 * kernel's "CHIP: PID = 78071c".  No leading byte is discarded. */
++	hpt_read(out, len);
 +}
 +
 +/* Dump the raw read bytes for an ICE register, including the leading byte the
@@ -251,14 +253,21 @@ new file mode 100644
 +	uint8_t rep[HPT_REPORT_LEN];
 +	hpt_read(rep, sizeof(rep));
 +
-+	/* Header sanity: the AP-mode report starts with 0xB7. */
-+	if (rep[0] != 0xB7) {
++	/* The AP packet is [0xB7 info header][3 bytes][0x5A demo packet][fingers].
++	 * The finger data therefore starts at rep[4] (see the vendor's
++	 * ili_demo_debug_info_mode: trdata = buf + P5_X_INFO_HEADER_LENGTH, and
++	 * ili_report_ap_mode indexes trdata[4*i+1]). */
++	const uint8_t *p0 = rep;
++	if (rep[0] == 0xB7) {
++		p0 = rep + 3;
++	}
++	if (p0[0] != 0x5A) {		/* P5_X_DEMO_PACKET_ID */
 +		return;
 +	}
 +
 +	bool down[HPT_MAX] = { false };
 +	for (int i = 0; i < HPT_MAX; ++i) {
-+		const uint8_t *p = &rep[4 * i + 1];
++		const uint8_t *p = &p0[4 * i + 1];
 +		if (p[0] == 0xFF && p[1] == 0xFF && p[2] == 0xFF) {
 +			continue;
 +		}
@@ -416,6 +425,28 @@ new file mode 100644
 +	hpt_ice_probe(0x51024, 12);		/* dummy reg after write: expect a5 5a 5a a5 */
 +	hpt_ice_probe(0x4009C, 12);		/* PID again */
 +	printf("HANOIP TOUCH: dummy_check=%d\n", hpt_dummy_check());
++
++	/* Leave ICE mode and try one AP-mode report read.  The vendor sends the
++	 * close command in the LONG form (it clears ice_stat first). */
++	{
++		static const uint8_t close_cmd[4] = { 0x1B, 0x62, 0x10, 0x18 };
++		uint8_t wbuf[8];
++		uint8_t rep[48];
++
++		wbuf[0] = HPT_SPI_WRITE;
++		wbuf[1] = 0x00;
++		wbuf[2] = sizeof(close_cmd);
++		memcpy(&wbuf[3], close_cmd, sizeof(close_cmd));
++		hpt_spi_xfer(wbuf, 3 + sizeof(close_cmd), NULL, 0);
++
++		memset(rep, 0, sizeof(rep));
++		hpt_read(rep, sizeof(rep));
++		printf("HANOIP AP raw:");
++		for (size_t i = 0; i < 24; ++i) {
++			printf(" %02x", rep[i]);
++		}
++		printf("\n");
++	}
 +
 +	/* Steady state: poll the IRQ and read reports. */
 +	for (;;) {
