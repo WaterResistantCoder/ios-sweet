@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,652 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -524,7 +524,8 @@ new file mode 100644
 +	}
 +	delay(20000);			/* let the FW come up */
 +	hpt_tpinfo_probe("X");
-+	hpt_ice_state_probe("X");
++	/* NOTE: do NOT probe the ICE state here — a 0x25 write is meaningless in
++	 * AP mode and leaves the chip mid-command. */
 +
 +	/* Switch the IC to AP (touch report) mode: the vendor's
 +	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
@@ -561,7 +562,7 @@ new file mode 100644
 +		memset(rep, 0, sizeof(rep));
 +		hpt_ap_read(rep, sizeof(rep));
 +		printf("HANOIP AP raw:");
-+		for (size_t i = 0; i < 24; ++i) {
++		for (size_t i = 0; i < 32; ++i) {
 +			printf(" %02x", rep[i]);
 +		}
 +		printf("\n");
@@ -584,17 +585,21 @@ new file mode 100644
 +			if (!irq) {
 +				uint8_t rep[48];
 +				bool nz = false;
++				int first = -1;
 +
 +				memset(rep, 0, sizeof(rep));
 +				hpt_ap_read(rep, sizeof(rep));
 +				for (size_t i = 0; i < sizeof(rep); ++i) {
 +					if (rep[i]) {
 +						nz = true;
++						if (first < 0) {
++							first = (int)i;
++						}
 +					}
 +				}
 +				if (nz) {
-+					printf("HANOIP REP:");
-+					for (size_t i = 0; i < 16; ++i) {
++					printf("HANOIP REP(first=%d):", first);
++					for (size_t i = 0; i < 32; ++i) {
 +						printf(" %02x", rep[i]);
 +					}
 +					printf("\n");
