@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,620 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -468,6 +468,36 @@ new file mode 100644
 +		hpt_spi_xfer(wbuf, 3 + sizeof(close_cmd), NULL, 0);
 +	}
 +	delay(20000);			/* let the FW come up */
++
++	/* Probe the AP command channel with the vendor's TP-info read:
++	 * wrapper({0xF6,0x20},2) then wrapper({0x20},1, buf, len).  A sane reply
++	 * has buf[0] == 0x20 and max_x = buf[4]<<8|buf[3] == 2047. */
++	{
++		static const uint8_t pre[2] = { 0xF6, 0x20 };
++		static const uint8_t sub[1] = { 0x20 };
++		uint8_t wbuf[8];
++		uint8_t buf[32];
++
++		wbuf[0] = HPT_SPI_WRITE;
++		wbuf[1] = 0x00;
++		wbuf[2] = sizeof(pre);
++		memcpy(&wbuf[3], pre, sizeof(pre));
++		hpt_spi_xfer(wbuf, 3 + sizeof(pre), NULL, 0);
++
++		wbuf[0] = HPT_SPI_WRITE;
++		wbuf[1] = 0x00;
++		wbuf[2] = sizeof(sub);
++		memcpy(&wbuf[3], sub, sizeof(sub));
++		hpt_spi_xfer(wbuf, 3 + sizeof(sub), NULL, 0);
++
++		memset(buf, 0, sizeof(buf));
++		hpt_ap_read(buf, 16);
++		printf("HANOIP TPINFO:");
++		for (size_t i = 0; i < 16; ++i) {
++			printf(" %02x", buf[i]);
++		}
++		printf("\n");
++	}
 +
 +	/* Switch the IC to AP (touch report) mode: the vendor's
 +	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
