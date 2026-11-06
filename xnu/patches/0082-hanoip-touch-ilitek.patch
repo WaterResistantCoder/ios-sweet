@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,449 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -90,7 +90,9 @@ new file mode 100644
 +		hpt_wr(hpt.gpio, HPT_GPIO_IO(pin), hpt_rd(hpt.gpio, HPT_GPIO_IO(pin)) | 2u);
 +	}
 +	cfg &= ~0x3ffu;
-+	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	/* drive is a 3-bit field at [8:6].  0x8 would spill into bit 9 (OE) and
++	 * silently turn an input pin into an output, so mask it. */
++	cfg |= (mux << 2) | pull | ((drive & 7u) << 6) | (out ? 0x200u : 0u);
 +	hpt_wr(hpt.gpio, off, cfg);
 +}
 +
@@ -185,7 +187,10 @@ new file mode 100644
 +hpt_ice_read(uint32_t addr, uint8_t *out, size_t len)
 +{
 +	uint8_t cmd[4] = { 0x25, (uint8_t)addr, (uint8_t)(addr >> 8), (uint8_t)(addr >> 16) };
-+	uint8_t rx[8];
++	uint8_t rx[16];
++	if (len + 1 > sizeof(rx)) {
++		len = sizeof(rx) - 1;
++	}
 +	hpt_ice_write_raw(cmd, sizeof(cmd));
 +	hpt_read(rx, len + 1);		/* the first byte after 0x83 is discarded */
 +	for (size_t i = 0; i < len; ++i) {
@@ -197,7 +202,7 @@ new file mode 100644
 +hpt_reset(void)
 +{
 +	/* Vendor ili_tp_reset(): high 1ms, low 5ms (assert, active-low), high 10ms. */
-+	hpt_gpio(HPT_RESET_PIN, 0, 0, 0x8, true);
++	hpt_gpio(HPT_RESET_PIN, 0, 0, 0x6, true);
 +	hpt_set(HPT_RESET_PIN, 1);
 +	delay(1000);
 +	hpt_set(HPT_RESET_PIN, 0);
@@ -254,10 +259,10 @@ new file mode 100644
 +static void
 +hpt_setup_pins(void)
 +{
-+	hpt_gpio(hpt.clk, 0, 0, 0x8, true);
-+	hpt_gpio(hpt.mosi, 0, 0, 0x8, true);
-+	hpt_gpio(hpt.miso, 0, 0, 0x8, false);	/* bias-disable, input */
-+	hpt_gpio(hpt.cs, 0, 0, 0x8, true);
++	hpt_gpio(hpt.clk, 0, 0, 0x6, true);
++	hpt_gpio(hpt.mosi, 0, 0, 0x6, true);
++	hpt_gpio(hpt.miso, 0, 0, 0x6, false);	/* bias-disable, input */
++	hpt_gpio(hpt.cs, 0, 0, 0x6, true);
 +	/* SPI mode 0: CLK must idle LOW.  hpt_gpio() leaves the output latch
 +	 * high, so without this the first bit of every byte gets no rising edge
 +	 * and the IC sees a bit-shifted stream (0x82 arrives as 0x02). */
@@ -275,11 +280,15 @@ new file mode 100644
 +	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
 +
 +	(void)id;
-+	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
++	hpt_gpio(HPT_IRQ_PIN, 0, 0, 0x6, false);
 +	/* Read the candidate pins as inputs, before we drive any of them. */
 +	printf("HANOIP TOUCH: idle 59=%d 60=%d 61=%d 62=%d 63=%d 64=%d 65=%d irq=%d\n",
 +	    hpt_get(59), hpt_get(60), hpt_get(61), hpt_get(62),
 +	    hpt_get(63), hpt_get(64), hpt_get(65), hpt_get(HPT_IRQ_PIN));
++	hpt_setup_pins();
++	printf("HANOIP TOUCH: cfg clk=%08x mosi=%08x miso=%08x cs=%08x (bit9=OE)\n",
++	    hpt_rd(hpt.gpio, HPT_GPIO_CFG(hpt.clk)), hpt_rd(hpt.gpio, HPT_GPIO_CFG(hpt.mosi)),
++	    hpt_rd(hpt.gpio, HPT_GPIO_CFG(hpt.miso)), hpt_rd(hpt.gpio, HPT_GPIO_CFG(hpt.cs)));
 +	unsigned hist0 = 0, histff = 0, other = 0;
 +	for (int a = 0; a < np; ++a) {
 +		for (int b = 0; b < np; ++b) {
@@ -346,7 +355,7 @@ new file mode 100644
 +	}
 +
 +	hpt_setup_pins();
-+	hpt_gpio(HPT_IRQ_PIN, 0, 0x2000, 0x8, false);
++	hpt_gpio(HPT_IRQ_PIN, 0, 0, 0x6, false);
 +	{
 +		int sweep = 0;
 +		(void)PE_parse_boot_argn("hptsweep", &sweep, sizeof(sweep));
