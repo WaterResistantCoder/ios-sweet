@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,652 @@
+@@ -0,0 +1,637 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -527,79 +527,42 @@ new file mode 100644
 +	/* NOTE: do NOT probe the ICE state here — a 0x25 write is meaningless in
 +	 * AP mode and leaves the chip mid-command. */
 +
-+	/* Switch the IC to AP (touch report) mode: the vendor's
-+	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
-+	 * P5_X_FW_AP_MODE=0x00}, 2).  Without it the chip streams debug/table
-+	 * data (increasing byte runs) instead of 0x5A report packets. */
-+	{
-+		static const uint8_t mode[2] = { 0xF0, 0x00 };
-+		uint8_t wbuf[8];
-+
-+		wbuf[0] = HPT_SPI_WRITE;
-+		wbuf[1] = 0x00;
-+		wbuf[2] = sizeof(mode);
-+		memcpy(&wbuf[3], mode, sizeof(mode));
-+		hpt_spi_xfer(wbuf, 3 + sizeof(mode), NULL, 0);
-+	}
-+	delay(10000);
-+
-+	/* func ctrl "sense" enable: 82 00 03 01 01 01 */
-+	{
-+		static const uint8_t sense[3] = { 0x01, 0x01, 0x01 };
-+		uint8_t wbuf[8];
-+
-+		wbuf[0] = HPT_SPI_WRITE;
-+		wbuf[1] = 0x00;
-+		wbuf[2] = sizeof(sense);
-+		memcpy(&wbuf[3], sense, sizeof(sense));
-+		hpt_spi_xfer(wbuf, 3 + sizeof(sense), NULL, 0);
-+	}
-+	delay(5000);
-+
-+	{
-+		uint8_t rep[48];
-+
-+		memset(rep, 0, sizeof(rep));
-+		hpt_ap_read(rep, sizeof(rep));
-+		printf("HANOIP AP raw:");
-+		for (size_t i = 0; i < 32; ++i) {
-+			printf(" %02x", rep[i]);
-+		}
-+		printf("\n");
-+	}
-+
-+	/* Steady state: watch the IRQ and dump any report we get. */
++	/* Two phases in one boot:
++	 *   phase 1 - read reports with NO mode control and NO sense enable, to see
++	 *             whether the chip reports by default after the short-form exit;
++	 *   phase 2 - then send {0xF0,0x00} (P5_X_MODE_CONTROL = AP/demo) and the
++	 *             "sense" enable, and read again.
++	 * Whichever phase yields a packet tells us what the chip actually needs. */
 +	{
 +		int last = -1;
-+		unsigned transitions = 0;
++		unsigned transitions = 0, iters = 0, logs = 0;
++		int phase = 1;
 +
++		printf("HANOIP TOUCH: phase 1 (no mode ctrl, no sense)\n");
 +		for (;;) {
 +			int irq = hpt_get(HPT_IRQ_PIN);
 +
 +			if (irq != last) {
 +				last = irq;
-+				if (transitions++ < 60) {
++				if (transitions++ < 80) {
 +					printf("HANOIP IRQ %d\n", irq);
 +				}
 +			}
 +			if (!irq) {
 +				uint8_t rep[48];
-+				bool nz = false;
 +				int first = -1;
 +
 +				memset(rep, 0, sizeof(rep));
-+				hpt_ap_read(rep, sizeof(rep));
-+				for (size_t i = 0; i < sizeof(rep); ++i) {
-+					if (rep[i]) {
-+						nz = true;
-+						if (first < 0) {
-+							first = (int)i;
-+						}
++				hpt_ap_read(rep, 43);
++				for (size_t i = 0; i < 43; ++i) {
++					if (rep[i] && first < 0) {
++						first = (int)i;
 +					}
 +				}
-+				if (nz) {
-+					printf("HANOIP REP(first=%d):", first);
-+					for (size_t i = 0; i < 32; ++i) {
++				if (first >= 0 && logs < 12) {
++					logs++;
++					printf("HANOIP P%d REP(first=%d):", phase, first);
++					for (size_t i = 0; i < 43; ++i) {
 +						printf(" %02x", rep[i]);
 +					}
 +					printf("\n");
@@ -608,6 +571,28 @@ new file mode 100644
 +			}
 +			for (volatile int k = 0; k < 200000; ++k) {
 +				__asm__ volatile("nop");
++			}
++			if (phase == 1 && ++iters > 1200) {
++				static const uint8_t mode[2] = { 0xF0, 0x00 };
++				static const uint8_t sense[3] = { 0x01, 0x01, 0x01 };
++				uint8_t wbuf[8];
++
++				wbuf[0] = HPT_SPI_WRITE;
++				wbuf[1] = 0x00;
++				wbuf[2] = sizeof(mode);
++				memcpy(&wbuf[3], mode, sizeof(mode));
++				hpt_spi_xfer(wbuf, 3 + sizeof(mode), NULL, 0);
++				delay(10000);
++				wbuf[0] = HPT_SPI_WRITE;
++				wbuf[1] = 0x00;
++				wbuf[2] = sizeof(sense);
++				memcpy(&wbuf[3], sense, sizeof(sense));
++				hpt_spi_xfer(wbuf, 3 + sizeof(sense), NULL, 0);
++				delay(5000);
++				phase = 2;
++				iters = 0;
++				logs = 0;
++				printf("HANOIP TOUCH: phase 2 (AP mode + sense)\n");
 +			}
 +		}
 +	}
