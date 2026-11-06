@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,620 @@
+@@ -0,0 +1,634 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -237,6 +237,53 @@ new file mode 100644
 +	printf("\n");
 +}
 +
++/* Leave ICE mode.  The vendor clears ice_stat before the write, so the close
++ * goes out in the LONG form. */
++static void
++hpt_ice_close(void)
++{
++	static const uint8_t close_cmd[4] = { 0x1B, 0x62, 0x10, 0x18 };
++	uint8_t wbuf[8];
++
++	wbuf[0] = HPT_SPI_WRITE;
++	wbuf[1] = 0x00;
++	wbuf[2] = sizeof(close_cmd);
++	memcpy(&wbuf[3], close_cmd, sizeof(close_cmd));
++	hpt_spi_xfer(wbuf, 3 + sizeof(close_cmd), NULL, 0);
++}
++
++/* Probe the AP command channel with the vendor's TP-info read:
++ * wrapper({0xF6,0x20},2) then wrapper({0x20},1, buf, len).  A sane reply has
++ * buf[0] == 0x20 and max_x = buf[4]<<8|buf[3] == 2047. */
++static void
++hpt_tpinfo_probe(const char *tag)
++{
++	static const uint8_t pre[2] = { 0xF6, 0x20 };
++	static const uint8_t sub[1] = { 0x20 };
++	uint8_t wbuf[8];
++	uint8_t buf[16];
++
++	wbuf[0] = HPT_SPI_WRITE;
++	wbuf[1] = 0x00;
++	wbuf[2] = sizeof(pre);
++	memcpy(&wbuf[3], pre, sizeof(pre));
++	hpt_spi_xfer(wbuf, 3 + sizeof(pre), NULL, 0);
++
++	wbuf[0] = HPT_SPI_WRITE;
++	wbuf[1] = 0x00;
++	wbuf[2] = sizeof(sub);
++	memcpy(&wbuf[3], sub, sizeof(sub));
++	hpt_spi_xfer(wbuf, 3 + sizeof(sub), NULL, 0);
++
++	memset(buf, 0, sizeof(buf));
++	hpt_ap_read(buf, sizeof(buf));
++	printf("HANOIP TPINFO-%s:", tag);
++	for (size_t i = 0; i < sizeof(buf); ++i) {
++		printf(" %02x", buf[i]);
++	}
++	printf("\n");
++}
++
 +static void
 +hpt_reset(void)
 +{
@@ -448,56 +495,23 @@ new file mode 100644
 +	hpt_ice_probe(0x4009C, 12);		/* PID again */
 +	printf("HANOIP TOUCH: dummy_check=%d\n", hpt_dummy_check());
 +
-+	/* Make the IC run its firmware: an IC *code* reset (write 0xAE to 0x40040),
-+	 * then leave ICE.  The vendor does exactly this after verifying the FW CRC
-+	 * in IRAM ("TP IC Code RST" -> "Disable ICE mode"), and only then does the
-+	 * chip answer in AP mode. */
++	/* Test A: leave ICE with NO code reset, then probe the AP channel.  This
++	 * separates "chip does not answer AP commands" from "the code reset left
++	 * it in the wrong mode". */
++	hpt_ice_close();
++	delay(20000);
++	hpt_tpinfo_probe("A");
++
++	/* Test B: the vendor's order — IC *code* reset (write 0xAE to 0x40040),
++	 * then leave ICE — and probe again. */
++	hpt_ice_enter();
 +	{
 +		uint8_t rc[5] = { 0x25, 0x40, 0x00, 0x04, 0xAE };
 +		hpt_ice_write_raw(rc, sizeof(rc));
 +	}
-+	{
-+		/* ICE close, long form (the vendor clears ice_stat first). */
-+		static const uint8_t close_cmd[4] = { 0x1B, 0x62, 0x10, 0x18 };
-+		uint8_t wbuf[8];
-+
-+		wbuf[0] = HPT_SPI_WRITE;
-+		wbuf[1] = 0x00;
-+		wbuf[2] = sizeof(close_cmd);
-+		memcpy(&wbuf[3], close_cmd, sizeof(close_cmd));
-+		hpt_spi_xfer(wbuf, 3 + sizeof(close_cmd), NULL, 0);
-+	}
-+	delay(20000);			/* let the FW come up */
-+
-+	/* Probe the AP command channel with the vendor's TP-info read:
-+	 * wrapper({0xF6,0x20},2) then wrapper({0x20},1, buf, len).  A sane reply
-+	 * has buf[0] == 0x20 and max_x = buf[4]<<8|buf[3] == 2047. */
-+	{
-+		static const uint8_t pre[2] = { 0xF6, 0x20 };
-+		static const uint8_t sub[1] = { 0x20 };
-+		uint8_t wbuf[8];
-+		uint8_t buf[32];
-+
-+		wbuf[0] = HPT_SPI_WRITE;
-+		wbuf[1] = 0x00;
-+		wbuf[2] = sizeof(pre);
-+		memcpy(&wbuf[3], pre, sizeof(pre));
-+		hpt_spi_xfer(wbuf, 3 + sizeof(pre), NULL, 0);
-+
-+		wbuf[0] = HPT_SPI_WRITE;
-+		wbuf[1] = 0x00;
-+		wbuf[2] = sizeof(sub);
-+		memcpy(&wbuf[3], sub, sizeof(sub));
-+		hpt_spi_xfer(wbuf, 3 + sizeof(sub), NULL, 0);
-+
-+		memset(buf, 0, sizeof(buf));
-+		hpt_ap_read(buf, 16);
-+		printf("HANOIP TPINFO:");
-+		for (size_t i = 0; i < 16; ++i) {
-+			printf(" %02x", buf[i]);
-+		}
-+		printf("\n");
-+	}
++	hpt_ice_close();
++	delay(20000);
++	hpt_tpinfo_probe("B");
 +
 +	/* Switch the IC to AP (touch report) mode: the vendor's
 +	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
