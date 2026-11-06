@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,647 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -284,6 +284,19 @@ new file mode 100644
 +	printf("\n");
 +}
 +
++/* If the chip is still in ICE mode, an ICE read of the PID register returns
++ * 03 1c 07 78.  If it is out of ICE, the 0x25 write is not an ICE command. */
++static void
++hpt_ice_state_probe(const char *tag)
++{
++	uint8_t buf[4];
++
++	memset(buf, 0, sizeof(buf));
++	hpt_ice_read(0x4009C, buf, sizeof(buf));
++	printf("HANOIP ICESTATE-%s: %02x %02x %02x %02x\n",
++	    tag, buf[0], buf[1], buf[2], buf[3]);
++}
++
 +static void
 +hpt_reset(void)
 +{
@@ -495,23 +508,23 @@ new file mode 100644
 +	hpt_ice_probe(0x4009C, 12);		/* PID again */
 +	printf("HANOIP TOUCH: dummy_check=%d\n", hpt_dummy_check());
 +
-+	/* Test A: leave ICE with NO code reset, then probe the AP channel.  This
-+	 * separates "chip does not answer AP commands" from "the code reset left
-+	 * it in the wrong mode". */
++	/* Test A: exit ICE in the vendor's LONG form, then probe the AP channel
++	 * and whether the chip is still in ICE. */
 +	hpt_ice_close();
 +	delay(20000);
 +	hpt_tpinfo_probe("A");
++	hpt_ice_state_probe("A");
 +
-+	/* Test B: the vendor's order — IC *code* reset (write 0xAE to 0x40040),
-+	 * then leave ICE — and probe again. */
++	/* Test B: exit ICE in the SHORT form (82 1b 62 10 18, like the entry),
++	 * then probe again. */
 +	hpt_ice_enter();
 +	{
-+		uint8_t rc[5] = { 0x25, 0x40, 0x00, 0x04, 0xAE };
-+		hpt_ice_write_raw(rc, sizeof(rc));
++		uint8_t sc[5] = { HPT_SPI_WRITE, 0x1B, 0x62, 0x10, 0x18 };
++		hpt_spi_xfer(sc, sizeof(sc), NULL, 0);
 +	}
-+	hpt_ice_close();
 +	delay(20000);
 +	hpt_tpinfo_probe("B");
++	hpt_ice_state_probe("B");
 +
 +	/* Switch the IC to AP (touch report) mode: the vendor's
 +	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
