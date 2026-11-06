@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,498 @@
+@@ -0,0 +1,558 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -248,11 +248,8 @@ new file mode 100644
 +}
 +
 +static void
-+hpt_report(void)
++hpt_report_buf(const uint8_t *rep)
 +{
-+	uint8_t rep[HPT_REPORT_LEN];
-+	hpt_read(rep, sizeof(rep));
-+
 +	/* The AP packet is [0xB7 info header][3 bytes][0x5A demo packet][fingers].
 +	 * The finger data therefore starts at rep[4] (see the vendor's
 +	 * ili_demo_debug_info_mode: trdata = buf + P5_X_INFO_HEADER_LENGTH, and
@@ -287,6 +284,15 @@ new file mode 100644
 +}
 +
 +static void
++hpt_report(void)
++{
++	uint8_t rep[HPT_REPORT_LEN];
++
++	hpt_read(rep, sizeof(rep));
++	hpt_report_buf(rep);
++}
++
++static void
 +hpt_setup_pins(void)
 +{
 +	hpt_gpio(hpt.clk, 0, 0, 0x6, true);
@@ -310,7 +316,7 @@ new file mode 100644
 +	uint8_t id[2] = { HPT_MODE_CTRL, HPT_FW_AP_MODE };
 +
 +	(void)id;
-+	hpt_gpio(HPT_IRQ_PIN, 0, 0, 0x6, false);
++	hpt_gpio(HPT_IRQ_PIN, 0, 3, 0x6, false);	/* pull-up: IRQ is active-low */
 +	/* Read the candidate pins as inputs, before we drive any of them. */
 +	printf("HANOIP TOUCH: idle 59=%d 60=%d 61=%d 62=%d 63=%d 64=%d 65=%d irq=%d\n",
 +	    hpt_get(59), hpt_get(60), hpt_get(61), hpt_get(62),
@@ -382,7 +388,7 @@ new file mode 100644
 +	}
 +
 +	hpt_setup_pins();
-+	hpt_gpio(HPT_IRQ_PIN, 0, 0, 0x6, false);
++	hpt_gpio(HPT_IRQ_PIN, 0, 3, 0x6, false);	/* pull-up: IRQ is active-low */
 +	{
 +		int sweep = 0;
 +		(void)PE_parse_boot_argn("hptsweep", &sweep, sizeof(sweep));
@@ -426,18 +432,42 @@ new file mode 100644
 +	hpt_ice_probe(0x4009C, 12);		/* PID again */
 +	printf("HANOIP TOUCH: dummy_check=%d\n", hpt_dummy_check());
 +
-+	/* Leave ICE mode and try one AP-mode report read.  The vendor sends the
-+	 * close command in the LONG form (it clears ice_stat first). */
++	/* Make the IC run its firmware: an IC *code* reset (write 0xAE to 0x40040),
++	 * then leave ICE.  The vendor does exactly this after verifying the FW CRC
++	 * in IRAM ("TP IC Code RST" -> "Disable ICE mode"), and only then does the
++	 * chip answer in AP mode. */
 +	{
++		uint8_t rc[5] = { 0x25, 0x40, 0x00, 0x04, 0xAE };
++		hpt_ice_write_raw(rc, sizeof(rc));
++	}
++	{
++		/* ICE close, long form (the vendor clears ice_stat first). */
 +		static const uint8_t close_cmd[4] = { 0x1B, 0x62, 0x10, 0x18 };
 +		uint8_t wbuf[8];
-+		uint8_t rep[48];
 +
 +		wbuf[0] = HPT_SPI_WRITE;
 +		wbuf[1] = 0x00;
 +		wbuf[2] = sizeof(close_cmd);
 +		memcpy(&wbuf[3], close_cmd, sizeof(close_cmd));
 +		hpt_spi_xfer(wbuf, 3 + sizeof(close_cmd), NULL, 0);
++	}
++	delay(20000);			/* let the FW come up */
++
++	/* func ctrl "sense" enable: 82 00 03 01 01 01 */
++	{
++		static const uint8_t sense[3] = { 0x01, 0x01, 0x01 };
++		uint8_t wbuf[8];
++
++		wbuf[0] = HPT_SPI_WRITE;
++		wbuf[1] = 0x00;
++		wbuf[2] = sizeof(sense);
++		memcpy(&wbuf[3], sense, sizeof(sense));
++		hpt_spi_xfer(wbuf, 3 + sizeof(sense), NULL, 0);
++	}
++	delay(5000);
++
++	{
++		uint8_t rep[48];
 +
 +		memset(rep, 0, sizeof(rep));
 +		hpt_read(rep, sizeof(rep));
@@ -448,13 +478,43 @@ new file mode 100644
 +		printf("\n");
 +	}
 +
-+	/* Steady state: poll the IRQ and read reports. */
-+	for (;;) {
-+		if (!hpt_get(HPT_IRQ_PIN)) {
-+			hpt_report();
-+		}
-+		for (volatile int k = 0; k < 200000; ++k) {
-+			__asm__ volatile("nop");
++	/* Steady state: watch the IRQ and dump any report we get. */
++	{
++		int last = -1;
++		unsigned transitions = 0;
++
++		for (;;) {
++			int irq = hpt_get(HPT_IRQ_PIN);
++
++			if (irq != last) {
++				last = irq;
++				if (transitions++ < 60) {
++					printf("HANOIP IRQ %d\n", irq);
++				}
++			}
++			if (!irq) {
++				uint8_t rep[48];
++				bool nz = false;
++
++				memset(rep, 0, sizeof(rep));
++				hpt_read(rep, sizeof(rep));
++				for (size_t i = 0; i < sizeof(rep); ++i) {
++					if (rep[i]) {
++						nz = true;
++					}
++				}
++				if (nz) {
++					printf("HANOIP REP:");
++					for (size_t i = 0; i < 16; ++i) {
++						printf(" %02x", rep[i]);
++					}
++					printf("\n");
++					hpt_report_buf(rep);
++				}
++			}
++			for (volatile int k = 0; k < 200000; ++k) {
++				__asm__ volatile("nop");
++			}
 +		}
 +	}
 +}
