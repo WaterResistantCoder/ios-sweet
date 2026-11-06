@@ -508,23 +508,23 @@ new file mode 100644
 +	hpt_ice_probe(0x4009C, 12);		/* PID again */
 +	printf("HANOIP TOUCH: dummy_check=%d\n", hpt_dummy_check());
 +
-+	/* Test A: exit ICE in the vendor's LONG form, then probe the AP channel
-+	 * and whether the chip is still in ICE. */
-+	hpt_ice_close();
-+	delay(20000);
-+	hpt_tpinfo_probe("A");
-+	hpt_ice_state_probe("A");
-+
-+	/* Test B: exit ICE in the SHORT form (82 1b 62 10 18, like the entry),
-+	 * then probe again. */
-+	hpt_ice_enter();
++	/* The ICE *exit* must use the SHORT form.  With the vendor's LONG form
++	 * (82 00 04 1b 62 10 18) the chip stayed in ICE — ICESTATE-A read the PID
++	 * straight back — while the short form (82 1b 62 10 18, same shape as the
++	 * entry) really leaves ICE (ICESTATE-B).  That was the underlying bug: the
++	 * chip never left ICE, so every read returned its auto-increment stream
++	 * and every AP command was meaningless. */
++	{
++		uint8_t rc[5] = { 0x25, 0x40, 0x00, 0x04, 0xAE };	/* IC code reset */
++		hpt_ice_write_raw(rc, sizeof(rc));
++	}
 +	{
 +		uint8_t sc[5] = { HPT_SPI_WRITE, 0x1B, 0x62, 0x10, 0x18 };
 +		hpt_spi_xfer(sc, sizeof(sc), NULL, 0);
 +	}
-+	delay(20000);
-+	hpt_tpinfo_probe("B");
-+	hpt_ice_state_probe("B");
++	delay(20000);			/* let the FW come up */
++	hpt_tpinfo_probe("X");
++	hpt_ice_state_probe("X");
 +
 +	/* Switch the IC to AP (touch report) mode: the vendor's
 +	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
