@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,558 @@
+@@ -0,0 +1,590 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -161,6 +161,22 @@ new file mode 100644
 +{
 +	uint8_t cmd = HPT_SPI_READ;
 +	hpt_spi_xfer(&cmd, 1, out, len);
++}
++
++/* AP-mode read.  Outside ICE mode the vendor's ili_spi_write_then_read_direct()
++ * uses offset = 2, so the payload starts 2 bytes after the 0x83 (whereas in ICE
++ * mode offset = 0 and it starts immediately). */
++static void
++hpt_ap_read(uint8_t *out, size_t len)
++{
++	uint8_t tmp[64];
++
++	if (len + 2 > sizeof(tmp)) {
++		len = sizeof(tmp) - 2;
++	}
++	memset(tmp, 0, sizeof(tmp));
++	hpt_read(tmp, len + 2);
++	memcpy(out, tmp + 2, len);
 +}
 +
 +/* ILITEK ICE-mode: on the wire, writes are `82 <data...>` with NO length bytes
@@ -453,6 +469,22 @@ new file mode 100644
 +	}
 +	delay(20000);			/* let the FW come up */
 +
++	/* Switch the IC to AP (touch report) mode: the vendor's
++	 * ili_switch_tp_mode() writes wrapper(cmd={P5_X_MODE_CONTROL=0xF0,
++	 * P5_X_FW_AP_MODE=0x00}, 2).  Without it the chip streams debug/table
++	 * data (increasing byte runs) instead of 0x5A report packets. */
++	{
++		static const uint8_t mode[2] = { 0xF0, 0x00 };
++		uint8_t wbuf[8];
++
++		wbuf[0] = HPT_SPI_WRITE;
++		wbuf[1] = 0x00;
++		wbuf[2] = sizeof(mode);
++		memcpy(&wbuf[3], mode, sizeof(mode));
++		hpt_spi_xfer(wbuf, 3 + sizeof(mode), NULL, 0);
++	}
++	delay(10000);
++
 +	/* func ctrl "sense" enable: 82 00 03 01 01 01 */
 +	{
 +		static const uint8_t sense[3] = { 0x01, 0x01, 0x01 };
@@ -470,7 +502,7 @@ new file mode 100644
 +		uint8_t rep[48];
 +
 +		memset(rep, 0, sizeof(rep));
-+		hpt_read(rep, sizeof(rep));
++		hpt_ap_read(rep, sizeof(rep));
 +		printf("HANOIP AP raw:");
 +		for (size_t i = 0; i < 24; ++i) {
 +			printf(" %02x", rep[i]);
@@ -497,7 +529,7 @@ new file mode 100644
 +				bool nz = false;
 +
 +				memset(rep, 0, sizeof(rep));
-+				hpt_read(rep, sizeof(rep));
++				hpt_ap_read(rep, sizeof(rep));
 +				for (size_t i = 0; i < sizeof(rep); ++i) {
 +					if (rep[i]) {
 +						nz = true;
