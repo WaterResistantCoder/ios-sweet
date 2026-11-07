@@ -2,7 +2,7 @@ diff --git a/bsd/dev/hanoip_touch.c b/bsd/dev/hanoip_touch.c
 new file mode 100644
 --- /dev/null
 +++ b/bsd/dev/hanoip_touch.c
-@@ -0,0 +1,637 @@
+@@ -0,0 +1,641 @@
 +/*
 + * hanoip (Moto G40 Fusion / G60) touch: ILITEK TDDI over a bit-banged SPI bus.
 + *
@@ -169,7 +169,7 @@ new file mode 100644
 +static void
 +hpt_ap_read(uint8_t *out, size_t len)
 +{
-+	uint8_t tmp[64];
++	uint8_t tmp[192];
 +
 +	if (len + 2 > sizeof(tmp)) {
 +		len = sizeof(tmp) - 2;
@@ -549,24 +549,28 @@ new file mode 100644
 +				}
 +			}
 +			if (!irq) {
-+				uint8_t rep[48];
++				uint8_t rep[160];
 +				int first = -1;
 +
 +				memset(rep, 0, sizeof(rep));
-+				hpt_ap_read(rep, 43);
-+				for (size_t i = 0; i < 43; ++i) {
++				hpt_ap_read(rep, 128);
++				for (size_t i = 0; i < 128; ++i) {
 +					if (rep[i] && first < 0) {
 +						first = (int)i;
 +					}
 +				}
-+				if (first >= 0 && logs < 12) {
++				if (first >= 0 && logs < 6) {
 +					logs++;
-+					printf("HANOIP P%d REP(first=%d):", phase, first);
-+					for (size_t i = 0; i < 43; ++i) {
++					printf("HANOIP P%d first=%d:", phase, first);
++					for (size_t i = 0; i < 64; ++i) {
 +						printf(" %02x", rep[i]);
 +					}
 +					printf("\n");
-+					hpt_report_buf(rep);
++					printf("HANOIP P%d   +64    :", phase);
++					for (size_t i = 64; i < 128; ++i) {
++						printf(" %02x", rep[i]);
++					}
++					printf("\n");
 +				}
 +			}
 +			for (volatile int k = 0; k < 200000; ++k) {
